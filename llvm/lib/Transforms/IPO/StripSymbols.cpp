@@ -295,6 +295,40 @@ bool StripDebugDeclare::runOnModule(Module &M) {
   return stripDebugDeclareImpl(M);
 }
 
+static void
+getCUsForInlinedFuncs(const DIScope *Scope, std::set<DICompileUnit *> &LiveCUs,
+                      SmallPtrSet<const DIScope *, 32> &VisitedScopes) {
+  if (!Scope)
+    return;
+
+  auto InS = VisitedScopes.insert(Scope);
+  if (!InS.second)
+    return;
+
+  if (const auto *SP = dyn_cast<DISubprogram>(Scope)) {
+    if (SP->getUnit())
+      LiveCUs.insert(SP->getUnit());
+    return;
+  }
+  if (const auto *LB = dyn_cast<DILexicalBlockBase>(Scope)) {
+    const DISubprogram *SP = LB->getSubprogram();
+    if (SP && SP->getUnit())
+      LiveCUs.insert(SP->getUnit());
+    return;
+  }
+
+  getCUsForInlinedFuncs(Scope->getScope(), LiveCUs, VisitedScopes);
+}
+
+static void
+getCUsForInlinedFuncs(const DILocation *Loc, std::set<DICompileUnit *> &LiveCUs,
+                      SmallPtrSet<const DIScope *, 32> &VisitedScopes) {
+  if (!Loc)
+    return;
+  getCUsForInlinedFuncs(Loc->getScope(), LiveCUs, VisitedScopes);
+  getCUsForInlinedFuncs(Loc->getInlinedAt(), LiveCUs, VisitedScopes);
+}
+
 static bool stripDeadDebugInfoImpl(Module &M) {
   bool Changed = false;
 
@@ -322,10 +356,19 @@ static bool stripDeadDebugInfoImpl(Module &M) {
   }
 
   std::set<DICompileUnit *> LiveCUs;
-  // Any CU referenced from a subprogram is live.
-  for (DISubprogram *SP : F.subprograms()) {
-    if (SP->getUnit())
-      LiveCUs.insert(SP->getUnit());
+  SmallPtrSet<const DIScope *, 32> VisitedScopes;
+  // Any CU is live if is referenced from a subprogram metadata that is linked
+  // to a function defined or inlined in the module.
+  for (const Function &Func : M.functions()) {
+    if (const auto *SP = cast_or_null<DISubprogram>(Func.getSubprogram())) {
+      if (SP->getUnit())
+        LiveCUs.insert(SP->getUnit());
+    }
+    for (const BasicBlock &BB : Func) {
+      for (const Instruction &I : BB)
+        if (auto DbgLoc = I.getDebugLoc())
+          getCUsForInlinedFuncs(DbgLoc.get(), LiveCUs, VisitedScopes);
+    }
   }
 
   bool HasDeadCUs = false;
@@ -333,9 +376,6 @@ static bool stripDeadDebugInfoImpl(Module &M) {
     // Create our live global variable list.
     bool GlobalVariableChange = false;
     for (auto *DIG : DIC->getGlobalVariables()) {
-      if (DIG->getExpression() && DIG->getExpression()->isConstant())
-        LiveGVs.insert(DIG);
-
       // Make sure we only visit each global variable only once.
       if (!VisitedSet.insert(DIG).second)
         continue;

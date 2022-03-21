@@ -4,9 +4,10 @@
 ; CHECK-NOT: "bar"
 ; CHECK-NOT: "abcd"
 ; CHECK-NOT: "GCC"
-; CHECK: "Globals"
-; CHECK: "abcd2"
-; CHECK: "abcd3"
+; CHECK-NOT: "Globals"
+; CHECK-NOT: "abcd2"
+; CHECK-NOT: "abcd3"
+; CHECK: "InlineTest"
 
 source_filename = "test/Transforms/StripSymbols/strip-dead-debug-info.ll"
 
